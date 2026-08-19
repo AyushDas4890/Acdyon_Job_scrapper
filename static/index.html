@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Acydon Job Ingestion Pipeline</title>
+  <meta name="description" content="Real-time job ingestion dashboard powered by a resilient scraping pipeline. Fetches, normalises, and deduplicates job listings from Hacker News." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Design tokens ─────────────────────────────────────────────────── */
+    :root {
+      --blue-900: #0B1929;
+      --blue-800: #0F2340;
+      --blue-700: #132D55;
+      --blue-600: #1A3D72;
+      --blue-500: #1E6FD9;
+      --blue-400: #4B94F0;
+      --blue-300: #7CB5FF;
+      --gold-700: #8A6820;
+      --gold-500: #C9A84C;
+      --gold-400: #E0BF6A;
+      --gold-300: #F0D898;
+      --surface-0: #080F1C;
+      --surface-1: rgba(14, 28, 54, 0.85);
+      --surface-2: rgba(20, 40, 74, 0.70);
+      --surface-3: rgba(30, 55, 100, 0.50);
+      --border: rgba(78, 148, 240, 0.18);
+      --border-gold: rgba(201, 168, 76, 0.25);
+      --text-primary: #E8F0FF;
+      --text-secondary: #8BA4CC;
+      --text-muted: #4A6080;
+      --success: #2DD48A;
+      --warning: #E0BF6A;
+      --error: #F06080;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --shadow-blue: 0 0 40px rgba(30, 111, 217, 0.15);
+      --shadow-gold: 0 0 30px rgba(201, 168, 76, 0.12);
+      --transition: 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* ── Reset ─────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--surface-0);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Animated background mesh ──────────────────────────────────────── */
+    .bg-mesh {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% 0%, rgba(30,111,217,0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(201,168,76,0.07) 0%, transparent 55%),
+        radial-gradient(ellipse 50% 60% at 90% 10%, rgba(30,111,217,0.06) 0%, transparent 50%);
+      pointer-events: none;
+    }
+    .bg-grid {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background-image:
+        linear-gradient(rgba(30,111,217,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(30,111,217,0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+    .app { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 0 24px 80px; }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      padding: 40px 0 32px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; flex-direction: column; gap: 6px; }
+    .brand-eyebrow {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--gold-500);
+    }
+    .brand h1 {
+      font-size: clamp(22px, 4vw, 34px);
+      font-weight: 800;
+      line-height: 1.15;
+      background: linear-gradient(135deg, var(--text-primary) 0%, var(--blue-300) 60%, var(--gold-400) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .brand-sub {
+      font-size: 13px;
+      color: var(--text-secondary);
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 28px; }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: var(--radius-sm);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: var(--transition);
+      position: relative;
+      overflow: hidden;
+    }
+    .btn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0);
+      transition: background var(--transition);
+    }
+    .btn:hover::after { background: rgba(255,255,255,0.06); }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--blue-500), #1558b8);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(30,111,217,0.35), inset 0 1px 0 rgba(255,255,255,0.1);
+    }
+    .btn-primary:hover { box-shadow: 0 6px 28px rgba(30,111,217,0.5), inset 0 1px 0 rgba(255,255,255,0.1); }
+
+    .btn-ghost {
+      background: var(--surface-2);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { color: var(--text-primary); border-color: rgba(78,148,240,0.4); }
+
+    .btn[disabled] {
+      opacity: 0.5;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn.loading .spinner { display: block; }
+    .btn.loading .btn-icon { display: none; }
+
+    /* ── Health banner ────────────────────────────────────────────────── */
+    .health-bar {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 20px;
+      margin-bottom: 28px;
+      backdrop-filter: blur(16px);
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .health-stat {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      flex: 1;
+      min-width: 100px;
+    }
+    .health-stat + .health-stat { border-left: 1px solid var(--border); padding-left: 20px; }
+    .health-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .health-value {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-feature-settings: "tnum";
+    }
+    .health-value.mono { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+    .status-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      margin-right: 6px;
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    .status-dot.warn { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+    .status-dot.error { background: var(--error); box-shadow: 0 0 8px var(--error); animation: none; }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.85); }
+    }
+
+    /* ── Controls row ─────────────────────────────────────────────────── */
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .search-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 200px;
+    }
+    .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+    #search-input {
+      width: 100%;
+      padding: 10px 14px 10px 40px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 13px;
+      transition: var(--transition);
+      outline: none;
+    }
+    #search-input::placeholder { color: var(--text-muted); }
+    #search-input:focus { border-color: var(--blue-500); box-shadow: 0 0 0 3px rgba(30,111,217,0.15); }
+
+    #company-filter {
+      padding: 10px 14px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      outline: none;
+      transition: var(--transition);
+      min-width: 140px;
+    }
+    #company-filter:focus { border-color: var(--blue-500); box-shadow: 0 0 0 3px rgba(30,111,217,0.15); }
+    #company-filter option { background: var(--blue-800); }
+
+    .results-count {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      align-self: center;
+      margin-left: auto;
+    }
+    .results-count span { color: var(--gold-400); font-weight: 600; }
+
+    /* ── Job grid ─────────────────────────────────────────────────────── */
+    #job-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+
+    /* ── Job card ─────────────────────────────────────────────────────── */
+    .job-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      backdrop-filter: blur(16px);
+      transition: var(--transition);
+      position: relative;
+      overflow: hidden;
+      cursor: default;
+      animation: card-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    .job-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--blue-500), var(--gold-500));
+      opacity: 0;
+      transition: opacity var(--transition);
+    }
+    .job-card:hover {
+      border-color: rgba(78,148,240,0.35);
+      box-shadow: var(--shadow-blue);
+      transform: translateY(-2px);
+    }
+    .job-card:hover::before { opacity: 1; }
+
+    @keyframes card-in {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .job-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .job-title {
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: var(--text-primary);
+      flex: 1;
+    }
+    .job-source-badge {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(201,168,76,0.12);
+      color: var(--gold-400);
+      border: 1px solid var(--border-gold);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .job-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .job-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .job-meta-icon { color: var(--blue-400); flex-shrink: 0; }
+    .job-company { font-weight: 500; color: var(--blue-300); }
+
+    .job-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .job-id {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .job-link {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--blue-400);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: color var(--transition);
+    }
+    .job-link:hover { color: var(--gold-400); }
+
+    /* ── Empty / loading states ──────────────────────────────────────── */
+    .state-card {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 80px 24px;
+      background: var(--surface-1);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-lg);
+      text-align: center;
+    }
+    .state-icon { font-size: 48px; opacity: 0.5; }
+    .state-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
+    .state-sub { font-size: 13px; color: var(--text-muted); }
+
+    .skeleton-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .skel {
+      background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+      background-size: 200% 100%;
+      border-radius: 4px;
+      animation: skel-shimmer 1.4s ease-in-out infinite;
+    }
+    @keyframes skel-shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* ── Ingest toast ─────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 32px;
+      right: 32px;
+      z-index: 1000;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 20px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--text-primary);
+      max-width: 360px;
+      transform: translateY(16px);
+      opacity: 0;
+      pointer-events: none;
+      transition: var(--transition);
+    }
+    #toast.show { transform: translateY(0); opacity: 1; pointer-events: auto; }
+    #toast.success { border-color: rgba(45,212,138,0.3); }
+    #toast.error   { border-color: rgba(240,96,128,0.3); }
+    .toast-icon { font-size: 18px; flex-shrink: 0; }
+
+    /* ── Footer ──────────────────────────────────────────────────────── */
+    footer {
+      margin-top: 64px;
+      padding: 24px 0;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .footer-left { font-size: 12px; color: var(--text-muted); }
+    .footer-left strong { color: var(--gold-400); }
+    .footer-stat {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .footer-stat .num {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--blue-400);
+    }
+
+    /* ── Responsive ──────────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      .health-stat + .health-stat { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 12px; }
+      .health-bar { flex-direction: column; }
+      footer { flex-direction: column; align-items: flex-start; }
+    }
+
+    /* ── Easter Egg Styles ────────────────────────────────────────────── */
+    .easter-egg-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 9, 20, 0.9);
+      backdrop-filter: blur(24px);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .easter-egg-modal.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .egg-card {
+      background: rgba(15, 35, 64, 0.85);
+      border: 2px solid var(--gold-500);
+      box-shadow: 0 0 50px rgba(201, 168, 76, 0.35);
+      border-radius: var(--radius-lg);
+      padding: 40px;
+      max-width: 500px;
+      width: calc(100% - 48px);
+      text-align: center;
+      transform: translateY(30px);
+      transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .easter-egg-modal.show .egg-card {
+      transform: translateY(0);
+    }
+    .egg-title {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--gold-500);
+      margin-bottom: 12px;
+      letter-spacing: 1px;
+      text-shadow: 0 0 10px rgba(201,168,76,0.3);
+    }
+    .egg-number {
+      font-size: 87px;
+      font-weight: 900;
+      color: var(--text-primary);
+      line-height: 1;
+      margin: 16px 0;
+      background: linear-gradient(135deg, var(--gold-300) 0%, var(--gold-500) 50%, var(--blue-400) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: pulse-87 2s ease-in-out infinite;
+    }
+    .egg-text {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    @keyframes pulse-87 {
+      0%, 100% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(201,168,76,0.4)); }
+      50% { transform: scale(1.05); filter: drop-shadow(0 0 25px rgba(30,111,217,0.5)); }
+    }
+    
+    /* ── Special Golden Theme override (Triggered by Egg) ─────────────── */
+    body.gold-override {
+      --blue-500: var(--gold-500);
+      --blue-400: var(--gold-400);
+      --blue-300: var(--gold-300);
+      --border: rgba(201, 168, 76, 0.25);
+    }
+    body.gold-override .bg-grid {
+      background-image:
+        linear-gradient(rgba(201,168,76,0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(201,168,76,0.07) 1px, transparent 1px);
+      animation: rotate-grid 180s linear infinite;
+    }
+    @keyframes rotate-grid {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── Platform Intelligence Panel ───────────────────────────────── */
+    .platform-section {
+      margin-bottom: 28px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: start;
+    }
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+    }
+    .platform-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      backdrop-filter: blur(12px);
+      transition: var(--transition);
+      position: relative;
+      overflow: hidden;
+    }
+    .platform-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--threat-color, var(--error));
+      opacity: 0.8;
+    }
+    .platform-card:hover {
+      border-color: rgba(78,148,240,0.25);
+      transform: translateY(-1px);
+    }
+    .platform-logo {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 800;
+      flex-shrink: 0;
+      color: #fff;
+    }
+    .platform-info { flex: 1; min-width: 0; }
+    .platform-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .platform-threat {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .threat-dot {
+      display: flex;
+      gap: 3px;
+      margin-top: 5px;
+    }
+    .threat-dot span {
+      width: 6px; height: 6px;
+      border-radius: 1px;
+      background: var(--threat-color, var(--error));
+    }
+    .threat-dot span.empty {
+      background: var(--surface-3);
+    }
+    
+    .demo-mode-banner {
+      background: rgba(30, 111, 217, 0.08);
+      border: 1px solid rgba(30, 111, 217, 0.25);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      backdrop-filter: blur(12px);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 220px;
+    }
+    .demo-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--blue-400);
+    }
+    .demo-source {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .demo-reason {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .section-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    @media (max-width: 700px) {
+      .platform-section { grid-template-columns: 1fr; }
+      .demo-mode-banner { min-width: unset; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-mesh"></div>
+  <div class="bg-grid"></div>
+
+  <div class="app">
+    <!-- ── Header ── -->
+    <header>
+      <div class="brand">
+        <span class="brand-eyebrow">Acydon Engineering Challenge · Part 1</span>
+        <h1>Job Ingestion Pipeline</h1>
+        <p class="brand-sub">Built for LinkedIn · Indeed · Naukri · Wellfound &mdash; running against a safe proxy source</p>
+      </div>
+      <div class="header-actions">
+        <button id="docs-btn" class="btn btn-ghost" onclick="window.open('/docs','_blank')">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+          API Docs
+        </button>
+        <button id="ingest-btn" class="btn btn-primary" onclick="triggerIngest()">
+          <div class="spinner"></div>
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Refresh Jobs
+        </button>
+      </div>
+    </header>
+
+    <!-- ── Platform Intelligence ── -->
+    <div class="platform-section">
+      <div>
+        <div class="section-label">Target Platforms — Real-World Threat Surface</div>
+        <div class="platform-grid">
+
+          <div class="platform-card" style="--threat-color: #F06080">
+            <div class="platform-logo" style="background: linear-gradient(135deg,#0077b5,#005f94)" title="LinkedIn">in</div>
+            <div class="platform-info">
+              <div class="platform-name">LinkedIn</div>
+              <div class="platform-threat">Critical</div>
+              <div class="threat-dot">
+                <span></span><span></span><span></span><span></span><span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="platform-card" style="--threat-color: #E0BF6A">
+            <div class="platform-logo" style="background: linear-gradient(135deg,#2557a7,#1a4080)" title="Indeed">Id</div>
+            <div class="platform-info">
+              <div class="platform-name">Indeed</div>
+              <div class="platform-threat">High</div>
+              <div class="threat-dot">
+                <span></span><span></span><span></span><span></span><span class="empty"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="platform-card" style="--threat-color: #E0BF6A">
+            <div class="platform-logo" style="background: linear-gradient(135deg,#ff7555,#d44b27)" title="Naukri">nk</div>
+            <div class="platform-info">
+              <div class="platform-name">Naukri</div>
+              <div class="platform-threat">High</div>
+              <div class="threat-dot">
+                <span></span><span></span><span></span><span></span><span class="empty"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="platform-card" style="--threat-color: #2DD48A">
+            <div class="platform-logo" style="background: linear-gradient(135deg,#4e5de4,#3344c4)" title="Wellfound">wf</div>
+            <div class="platform-info">
+              <div class="platform-name">Wellfound</div>
+              <div class="platform-threat">Medium</div>
+              <div class="threat-dot">
+                <span></span><span></span><span></span><span class="empty"></span><span class="empty"></span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Demo Mode Notice -->
+      <div class="demo-mode-banner">
+        <span class="demo-label">🟢 Demo Mode Active</span>
+        <span class="demo-source">Hacker News Jobs API</span>
+        <span class="demo-reason">The ingestion engine targets the platforms above. For this submission, it runs against HN — a public, no-ToS-breach proxy source — so no live account gets burned.</span>
+      </div>
+    </div>
+
+    <!-- ── Health bar ── -->
+    <div class="health-bar" id="health-bar">
+      <div class="health-stat">
+        <span class="health-label">Status</span>
+        <span class="health-value" id="h-status">
+          <span class="status-dot warn"></span>Loading…
+        </span>
+      </div>
+      <div class="health-stat">
+        <span class="health-label">Total Jobs</span>
+        <span class="health-value" id="h-count">—</span>
+      </div>
+      <div class="health-stat">
+        <span class="health-label">Last Ingestion</span>
+        <span class="health-value mono" id="h-time">—</span>
+      </div>
+      <div class="health-stat">
+        <span class="health-label">Data Source</span>
+        <span class="health-value" style="color:var(--blue-300)">Hacker News Jobs API</span>
+      </div>
+    </div>
+
+    <!-- ── Controls ── -->
+    <div class="controls">
+      <div class="search-wrap">
+        <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search-input" type="text" placeholder="Search by title…" oninput="filterJobs()" autocomplete="off" />
+      </div>
+      <select id="company-filter" onchange="filterJobs()">
+        <option value="">All Companies</option>
+      </select>
+      <div class="results-count" id="results-count" style="display:none">
+        Showing <span id="visible-count">0</span> of <span id="total-count">0</span>
+      </div>
+    </div>
+
+    <!-- ── Job grid ── -->
+    <div id="job-grid">
+      <!-- Skeleton placeholders -->
+      <div class="skeleton-card"><div class="skel" style="height:14px;width:70%"></div><div class="skel" style="height:12px;width:45%"></div><div class="skel" style="height:12px;width:60%"></div><div class="skel" style="height:1px;margin-top:8px"></div><div class="skel" style="height:12px;width:30%"></div></div>
+      <div class="skeleton-card"><div class="skel" style="height:14px;width:80%"></div><div class="skel" style="height:12px;width:50%"></div><div class="skel" style="height:12px;width:40%"></div><div class="skel" style="height:1px;margin-top:8px"></div><div class="skel" style="height:12px;width:35%"></div></div>
+      <div class="skeleton-card"><div class="skel" style="height:14px;width:60%"></div><div class="skel" style="height:12px;width:55%"></div><div class="skel" style="height:12px;width:70%"></div><div class="skel" style="height:1px;margin-top:8px"></div><div class="skel" style="height:12px;width:25%"></div></div>
+    </div>
+  </div>
+
+  <!-- ── Footer ── -->
+  <div class="app">
+    <footer>
+      <div class="footer-left">
+        Built for <strong>Acydon Technologies</strong> · Part 1: Getting Data Out of a Platform That Doesn't Want You To
+      </div>
+      <div class="footer-stat">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
+        API calls this session: <span class="num" id="call-counter">0</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ── Toast ── -->
+  <div id="toast" role="status" aria-live="polite">
+    <span class="toast-icon" id="toast-icon">✓</span>
+    <span id="toast-msg"></span>
+  </div>
+
+  <!-- ── Easter Egg Modal ── -->
+  <div id="easter-egg-modal" class="easter-egg-modal" onclick="closeEasterEgg()">
+    <div class="egg-card" onclick="event.stopPropagation()">
+      <div class="egg-title">⚡ ARCHITECTURE OVERLAY ⚡</div>
+      <div class="egg-number">87</div>
+      <div class="egg-text">
+        <strong>Protocol 87 Authorized.</strong><br>
+        You have activated the golden pipeline theme override. The network grids are re-aligning. Welcome, Admin.
+      </div>
+      <button class="btn btn-primary" onclick="closeEasterEgg()">Back to Dashboard</button>
+    </div>
+  </div>
+
+  <script>
+    /* ────────────────────────────────────────────────────────────────────
+       State
+    ──────────────────────────────────────────────────────────────────── */
+    let allJobs = [];
+    let callCount = 0;
+    let toastTimer = null;
+
+    /* ────────────────────────────────────────────────────────────────────
+       API helpers
+    ──────────────────────────────────────────────────────────────────── */
+    async function apiFetch(path, opts = {}) {
+      callCount++;
+      document.getElementById('call-counter').textContent = callCount;
+      const res = await fetch(path, opts);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
+
+    /* ────────────────────────────────────────────────────────────────────
+       Health
+    ──────────────────────────────────────────────────────────────────── */
+    async function loadHealth() {
+      try {
+        const d = await apiFetch('/health');
+        const dot = d.status === 'ok' && d.has_data ? '' : d.status === 'degraded' ? 'warn' : 'error';
+        const dotClass = dot ? ` class="status-dot ${dot}"` : ' class="status-dot"';
+        document.getElementById('h-status').innerHTML = `<span${dotClass}></span>${d.status.charAt(0).toUpperCase() + d.status.slice(1)}`;
+        document.getElementById('h-count').textContent = d.has_data ? d.job_count : '—';
+        document.getElementById('h-time').textContent = d.last_ingestion
+          ? formatTs(d.last_ingestion) : 'Never';
+      } catch (e) {
+        document.getElementById('h-status').innerHTML = '<span class="status-dot error"></span>Unreachable';
+      }
+    }
+
+    /* ────────────────────────────────────────────────────────────────────
+       Jobs
+    ──────────────────────────────────────────────────────────────────── */
+    async function loadJobs() {
+      try {
+        const d = await apiFetch('/jobs');
+        allJobs = d.jobs || [];
+        populateCompanyFilter(allJobs);
+        renderJobs(allJobs);
+        document.getElementById('results-count').style.display = 'flex';
+      } catch (e) {
+        renderError('Could not load jobs. Is the API running?');
+      }
+    }
+
+    function renderJobs(jobs) {
+      const grid = document.getElementById('job-grid');
+      const q = document.getElementById('search-input').value.trim().toLowerCase();
+      const company = document.getElementById('company-filter').value;
+
+      const filtered = jobs.filter(j => {
+        const matchQ = !q || j.title.toLowerCase().includes(q);
+        const matchC = !company || (j.company || '') === company;
+        return matchQ && matchC;
+      });
+
+      document.getElementById('visible-count').textContent = filtered.length;
+      document.getElementById('total-count').textContent = jobs.length;
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `<div class="state-card"><div class="state-icon">🔍</div><div class="state-title">No matches</div><div class="state-sub">Try a different search term or clear your filters.</div></div>`;
+        return;
+      }
+
+      grid.innerHTML = filtered.map((j, i) => cardHTML(j, i)).join('');
+    }
+
+    function cardHTML(j, i) {
+      const delay = Math.min(i * 35, 300);
+      const timeAgo = relativeTime(j.posted_at_unix);
+      const company = j.company
+        ? `<div class="job-meta-row"><svg class="job-meta-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg><span class="job-company">${esc(j.company)}</span></div>`
+        : '';
+      const link = j.url
+        ? `<a class="job-link" href="${esc(j.url)}" target="_blank" rel="noopener">View post <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>`
+        : `<span style="font-size:11px;color:var(--text-muted)">No URL</span>`;
+
+      return `<div class="job-card" style="animation-delay:${delay}ms">
+        <div class="job-card-header">
+          <div class="job-title">${esc(j.title)}</div>
+          <span class="job-source-badge">HN</span>
+        </div>
+        <div class="job-meta">
+          ${company}
+          <div class="job-meta-row">
+            <svg class="job-meta-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+            ${timeAgo} · by <span style="color:var(--text-primary);margin-left:4px">${esc(j.posted_by)}</span>
+          </div>
+        </div>
+        <div class="job-footer">
+          <span class="job-id">#${j.id}</span>
+          ${link}
+        </div>
+      </div>`;
+    }
+
+    function renderError(msg) {
+      document.getElementById('job-grid').innerHTML = `<div class="state-card"><div class="state-icon">⚠️</div><div class="state-title">${esc(msg)}</div><div class="state-sub">Check that the FastAPI server is running.</div></div>`;
+    }
+
+    function filterJobs() { renderJobs(allJobs); }
+
+    function populateCompanyFilter(jobs) {
+      const sel = document.getElementById('company-filter');
+      const companies = [...new Set(jobs.map(j => j.company).filter(Boolean))].sort();
+      const current = sel.value;
+      sel.innerHTML = '<option value="">All Companies</option>';
+      companies.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c; opt.textContent = c;
+        if (c === current) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
+    /* ────────────────────────────────────────────────────────────────────
+       Ingest trigger + polling
+    ──────────────────────────────────────────────────────────────────── */
+    async function triggerIngest() {
+      const btn = document.getElementById('ingest-btn');
+      btn.classList.add('loading');
+      btn.disabled = true;
+      showToast('info', '⚙️', 'Ingestion started — polling for new data…');
+
+      try {
+        await apiFetch('/ingest', { method: 'POST' });
+        await pollUntilFresh();
+        await Promise.all([loadHealth(), loadJobs()]);
+        showToast('success', '✓', 'Pipeline complete — job feed refreshed.');
+      } catch (e) {
+        showToast('error', '✗', `Ingestion failed: ${e.message}`);
+      } finally {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+      }
+    }
+
+    async function pollUntilFresh(maxAttempts = 40, intervalMs = 1500) {
+      const before = document.getElementById('h-time').textContent;
+      for (let i = 0; i < maxAttempts; i++) {
+        await sleep(intervalMs);
+        try {
+          const h = await apiFetch('/health');
+          const after = h.last_ingestion ? formatTs(h.last_ingestion) : '—';
+          if (after !== before && after !== '—') return;
+        } catch (_) { /* keep polling */ }
+      }
+    }
+
+    /* ────────────────────────────────────────────────────────────────────
+       UI helpers
+    ──────────────────────────────────────────────────────────────────── */
+    function showToast(type, icon, msg) {
+      const el = document.getElementById('toast');
+      document.getElementById('toast-icon').textContent = icon;
+      document.getElementById('toast-msg').textContent = msg;
+      el.className = `show ${type}`;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { el.className = ''; }, 4500);
+    }
+
+    function esc(s) {
+      if (!s) return '';
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function formatTs(iso) {
+      try {
+        return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+      } catch { return iso; }
+    }
+
+    function relativeTime(unix) {
+      const diff = Math.floor(Date.now() / 1000) - unix;
+      if (diff < 60) return 'just now';
+      if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+      if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+      return `${Math.floor(diff/86400)}d ago`;
+    }
+
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    /* ────────────────────────────────────────────────────────────────────
+       Konami Code Easter Egg
+       Sequence: Up, Up, Down, Down, Left, Right, Left, Right, B, A
+    ──────────────────────────────────────────────────────────────────── */
+    const konamiCode = [
+      'ArrowUp', 'ArrowUp',
+      'ArrowDown', 'ArrowDown',
+      'ArrowLeft', 'ArrowRight',
+      'ArrowLeft', 'ArrowRight',
+      'b', 'a'
+    ];
+    let konamiIndex = 0;
+
+    window.addEventListener('keydown', (e) => {
+      const key = e.key.toLowerCase();
+      const targetKey = konamiCode[konamiIndex].toLowerCase();
+
+      if (key === targetKey) {
+        konamiIndex++;
+        if (konamiIndex === konamiCode.length) {
+          activateEasterEgg();
+          konamiIndex = 0;
+        }
+      } else {
+        konamiIndex = key === konamiCode[0].toLowerCase() ? 1 : 0;
+      }
+    });
+
+    function playEggSound() {
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const playTone = (freq, type, start, duration) => {
+          const osc = audioCtx.createOscillator();
+          const gainNode = audioCtx.createGain();
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, start);
+          gainNode.gain.setValueAtTime(0.08, start);
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+          osc.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
+          osc.start(start);
+          osc.stop(start + duration);
+        };
+        const now = audioCtx.currentTime;
+        playTone(261.63, 'triangle', now, 0.15); // C4
+        playTone(329.63, 'triangle', now + 0.12, 0.15); // E4
+        playTone(392.00, 'triangle', now + 0.24, 0.15); // G4
+        playTone(523.25, 'sine', now + 0.36, 0.4); // C5
+        playTone(659.25, 'sine', now + 0.36, 0.4); // E5
+        playTone(783.99, 'sine', now + 0.48, 0.6); // G5
+        playTone(1046.50, 'sine', now + 0.48, 0.8); // C6
+      } catch (e) {
+        console.warn('Audio not played:', e);
+      }
+    }
+
+    function activateEasterEgg() {
+      playEggSound();
+      document.body.classList.toggle('gold-override');
+      const hasOverride = document.body.classList.contains('gold-override');
+      const modal = document.getElementById('easter-egg-modal');
+      
+      if (hasOverride) {
+        modal.classList.add('show');
+        showToast('success', '👑', 'Protocol 87 Active: Gold theme enabled.');
+        console.log(
+          `%c
+   █████╗  ██████╗██╗   ██╗██████╗  ██████╗ ███╗   ██╗
+  ██╔══██╗██╔════╝╚██╗ ██╔╝██╔══██╗██╔═══██╗████╗  ██║
+  ███████║██║      ╚████╔╝ ██║  ██║██║   ██║██╔██╗ ██║
+  ██╔══██║██║       ╚██╔╝  ██║  ██║██║   ██║██║╚██╗██║
+  ██║  ██║╚██████╗   ██║   ██████╔╝╚██████╔╝██║ ╚████║
+  ╚═╝  ╚═╝ ╚═════╝   ╚═╝   ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+  
+  [EASTER EGG] PROTOCOL 87 AUTHORIZED.
+  WELCOME AYUSH. GOLD+BLUE ENGAGED.
+          `,
+          "color: #C9A84C; font-weight: bold; font-family: monospace;"
+        );
+      } else {
+        showToast('info', 'ℹ️', 'Default theme restored.');
+      }
+    }
+
+    function closeEasterEgg() {
+      document.getElementById('easter-egg-modal').classList.remove('show');
+    }
+
+    /* ────────────────────────────────────────────────────────────────────
+       Init
+    ──────────────────────────────────────────────────────────────────── */
+    (async () => {
+      await Promise.all([loadHealth(), loadJobs()]);
+    })();
+  </script>
+</body>
+</html>
