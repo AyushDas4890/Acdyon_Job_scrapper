@@ -11,3 +11,5 @@ ENV/
 *.log
 .agents/
 .gemini/
+jobs.json
+CLAUDE-FABLE-5.md
