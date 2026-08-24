@@ -13,6 +13,7 @@ pipeline execute in real time without needing access to the server's cron.
 """
 
 import json
+import logging
 import os
 import threading
 from datetime import datetime
@@ -24,6 +25,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ingester import run_ingestion, DATA_FILE
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -39,10 +42,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS origins are configurable via env var so this isn't wide-open by default
+# in a real deployment; falls back to "*" for the demo's convenience.
+_cors_origins = os.getenv("ALLOWED_ORIGINS", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=["*"] if _cors_origins == "*" else [o.strip() for o in _cors_origins.split(",")],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -106,7 +112,8 @@ def health_check():
             last_ingestion=data.get("ingested_at"),
             job_count=data.get("total", 0),
         )
-    except Exception:
+    except Exception as exc:
+        log.warning("Health check found a corrupt data file (%s): %s", DATA_FILE, exc)
         return HealthResponse(status="degraded", has_data=False)
 
 
@@ -150,6 +157,8 @@ def trigger_ingest(background_tasks: BackgroundTasks):
             _ingestion_running = True
             try:
                 run_ingestion()
+            except Exception:
+                log.exception("Background ingestion run failed.")
             finally:
                 _ingestion_running = False
 

@@ -39,22 +39,22 @@ log = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATA_FILE = "jobs.json"
+DATA_FILE = os.getenv("JOBS_DATA_FILE", "jobs.json")
 HN_JOBS_ENDPOINT = "https://hacker-news.firebaseio.com/v0/jobstories.json"
 HN_ITEM_ENDPOINT = "https://hacker-news.firebaseio.com/v0/item/{item_id}.json"
 
 # How many job IDs to pull per ingestion run. Keep this low for the demo so
 # we don't hammer the API unnecessarily; in production you'd paginate further.
-MAX_JOBS_PER_RUN = 20
+MAX_JOBS_PER_RUN = int(os.getenv("MAX_JOBS_PER_RUN", "20"))
 
 # Pacing: each request sleeps a random amount between these two bounds (seconds).
 # This mimics human reading speed and avoids triggering rate-limit detection.
-PACE_MIN = 0.4
-PACE_MAX = 1.2
+PACE_MIN = float(os.getenv("PACE_MIN", "0.4"))
+PACE_MAX = float(os.getenv("PACE_MAX", "1.2"))
 
 # Retry settings for the exponential backoff logic.
-MAX_RETRIES = 4
-BACKOFF_BASE = 2.0  # seconds; doubles on each retry
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "4"))
+BACKOFF_BASE = float(os.getenv("BACKOFF_BASE", "2.0"))  # seconds; doubles on each retry
 
 
 # ---------------------------------------------------------------------------
